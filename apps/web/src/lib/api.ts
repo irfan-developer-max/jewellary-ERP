@@ -1,12 +1,22 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
 
-let accessToken: string | null = null;
+let accessToken: string | null = typeof window !== 'undefined' ? sessionStorage.getItem('erp_access_token') : null;
 
 export function setAccessToken(token: string | null) {
   accessToken = token;
+  if (typeof window !== 'undefined') {
+    if (token) {
+      sessionStorage.setItem('erp_access_token', token);
+    } else {
+      sessionStorage.removeItem('erp_access_token');
+    }
+  }
 }
 
 export function getAccessToken() {
+  if (!accessToken && typeof window !== 'undefined') {
+    accessToken = sessionStorage.getItem('erp_access_token');
+  }
   return accessToken;
 }
 
@@ -52,20 +62,21 @@ export async function apiFetch<T>(path: string, options: FetchOptions = {}): Pro
     if (qs) url += `?${qs}`;
   }
 
+  const token = getAccessToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(extraHeaders as Record<string, string>),
   };
 
-  if (accessToken) {
-    headers['Authorization'] = `Bearer ${accessToken}`;
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
   }
 
   try {
     return await rawFetch<T>(url, headers, rest);
   } catch (err) {
-    // On 401, attempt one silent refresh then retry
-    if (err instanceof ApiError && err.status === 401 && accessToken && !path.includes('/auth/')) {
+    // On 401, attempt silent refresh then retry (even if token in memory was missing)
+    if (err instanceof ApiError && err.status === 401 && !path.includes('/auth/')) {
       if (!isRefreshing) {
         isRefreshing = true;
         refreshPromise = refreshToken().finally(() => {

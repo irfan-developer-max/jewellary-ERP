@@ -13,6 +13,8 @@ import { customerRouter } from './routes/customer.routes.js';
 import { dueRouter } from './routes/due.routes.js';
 import { stockMovementRouter } from './routes/stockMovement.routes.js';
 import { auditLogRouter } from './routes/auditLog.routes.js';
+import { reportRouter } from './routes/report.routes.js';
+import { stripeRouter } from './routes/stripe.routes.js';
 
 export const app: Express = express();
 
@@ -28,7 +30,15 @@ app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:3000',
   credentials: true,
 }));
-app.use(express.json());
+
+// Capture rawBody for Stripe Webhook signature verification
+app.use(
+  express.json({
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(cookieParser());
 
 // Health check
@@ -46,6 +56,8 @@ app.use('/api/v1/customers', customerRouter);
 app.use('/api/v1/dues', dueRouter);
 app.use('/api/v1/stock-movements', stockMovementRouter);
 app.use('/api/v1/audit-log', auditLogRouter);
+app.use('/api/v1/reports', reportRouter);
+app.use('/api/v1/payments/stripe', stripeRouter);
 
 // Global error handler (must be last)
 app.use(errorHandler);

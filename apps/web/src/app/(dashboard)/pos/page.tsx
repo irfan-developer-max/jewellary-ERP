@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { formatINR } from '@/lib/format';
+import { CreditCard, ExternalLink, Copy, Check, MessageSquare, X, RefreshCw, CheckCircle2 } from 'lucide-react';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -89,6 +90,15 @@ export default function POSBillingPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
+  // Stripe Payment State
+  const [stripeModalOpen, setStripeModalOpen] = useState(false);
+  const [stripeSession, setStripeSession] = useState<{ url: string; sessionId: string } | null>(null);
+  const [stripeLoading, setStripeLoading] = useState(false);
+  const [stripeError, setStripeError] = useState('');
+  const [stripeVerifying, setStripeVerifying] = useState(false);
+  const [stripeSuccess, setStripeSuccess] = useState(false);
+  const [stripeCopied, setStripeCopied] = useState(false);
+
   // ─── Product Search ────────────────────────────────────────────
 
   const searchProducts = useCallback(async (q: string) => {
@@ -158,9 +168,10 @@ export default function POSBillingPage() {
   }
 
   function setLineDiscount(productId: string, type: 'AMOUNT' | 'PCT', value: string) {
+    const num = parseFloat(value);
     setCart((prev) => prev.map((c) =>
       c.product.id === productId
-        ? { ...c, lineDiscount: value ? { type, value: parseFloat(value) } : null }
+        ? { ...c, lineDiscount: value && !isNaN(num) && num > 0 ? { type, value: num } : null }
         : c,
     ));
   }
@@ -183,6 +194,73 @@ export default function POSBillingPage() {
   function autoFillPayment() {
     if (preview && payments.length === 1) {
       setPayments([{ ...payments[0], amount: preview.grandTotal }]);
+    }
+  }
+
+  // ─── Stripe Payment Checkout ───────────────────────────────────
+
+  async function initiateStripeCheckout() {
+    if (!preview || cart.length === 0) return;
+    setStripeError('');
+    setStripeSuccess(false);
+    setStripeModalOpen(true);
+    setStripeLoading(true);
+    setStripeCopied(false);
+
+    try {
+      const custName = customerMode === 'existing' && selectedCustomer
+        ? selectedCustomer.name
+        : customerMode === 'new' && newCustomer.name
+        ? newCustomer.name
+        : 'Walk-in Customer';
+
+      const custPhone = customerMode === 'existing' && selectedCustomer
+        ? selectedCustomer.phone
+        : customerMode === 'new' && newCustomer.phone
+        ? newCustomer.phone
+        : '';
+
+      const res = await apiFetch<{ url: string; sessionId: string }>('/payments/stripe/create-checkout-session', {
+        method: 'POST',
+        body: JSON.stringify({
+          amount: parseFloat(preview.grandTotal),
+          customerName: custName,
+          customerPhone: custPhone,
+          customerEmail: customerMode === 'new' ? newCustomer.email : undefined,
+        }),
+      });
+
+      setStripeSession(res);
+    } catch (err: any) {
+      setStripeError(err.message || 'Failed to initialize Stripe checkout');
+    } finally {
+      setStripeLoading(false);
+    }
+  }
+
+  async function verifyStripePayment() {
+    if (!stripeSession?.sessionId || !preview) return;
+    setStripeVerifying(true);
+    setStripeError('');
+
+    try {
+      const res = await apiFetch<{ status: string; paymentStatus: string }>('/payments/stripe/verify/' + stripeSession.sessionId);
+      if (res.paymentStatus === 'paid' || res.status === 'complete') {
+        setStripeSuccess(true);
+        // Auto-fill payment with Stripe card
+        setPayments([{
+          mode: 'CARD',
+          amount: preview.grandTotal,
+          reference: `Stripe: ${stripeSession.sessionId.slice(-8)}`,
+        }]);
+        setTimeout(() => setStripeModalOpen(false), 2000);
+      } else {
+        setStripeError('Payment not completed yet. Please complete checkout or try again.');
+      }
+    } catch (err: any) {
+      setStripeError(err.message || 'Could not verify payment');
+    } finally {
+      setStripeVerifying(false);
     }
   }
 
@@ -221,7 +299,7 @@ export default function POSBillingPage() {
     const items = cart.map((c) => ({
       productId: c.product.id,
       quantity: c.quantity,
-      ...(c.lineDiscount ? { lineDiscount: c.lineDiscount } : {}),
+      ...(c.lineDiscount && c.lineDiscount.value > 0 ? { lineDiscount: c.lineDiscount } : {}),
     }));
 
     const body: Record<string, unknown> = {
@@ -302,7 +380,7 @@ export default function POSBillingPage() {
         items: cart.map((c) => ({
           productId: c.product.id,
           quantity: c.quantity,
-          ...(c.lineDiscount ? { lineDiscount: c.lineDiscount } : {}),
+          ...(c.lineDiscount && c.lineDiscount.value > 0 ? { lineDiscount: c.lineDiscount } : {}),
         })),
         gstMode,
         payments: payments.map((p) => ({
@@ -631,7 +709,18 @@ export default function POSBillingPage() {
         <div className="bg-white rounded-lg shadow p-4">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold text-gray-700 uppercase">Payments</h3>
-            <button type="button" onClick={addPayment} className="text-xs text-gold-700 hover:underline">+ Split</button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={initiateStripeCheckout}
+                disabled={!preview || cart.length === 0}
+                className="inline-flex items-center gap-1 rounded-lg border border-[#ad7637] bg-gradient-to-r from-[#ad7637] to-[#d19a4e] px-2 py-0.5 text-xs font-semibold text-white shadow-xs hover:brightness-105 disabled:opacity-50 transition-all"
+              >
+                <CreditCard className="h-3 w-3" />
+                <span>Stripe Pay</span>
+              </button>
+              <button type="button" onClick={addPayment} className="text-xs text-gold-700 hover:underline">+ Split</button>
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -719,6 +808,138 @@ export default function POSBillingPage() {
           {submitting ? 'Processing...' : `Complete Sale${preview ? ` — ${formatINR(preview.grandTotal)}` : ''}`}
         </button>
       </div>
+
+      {/* Stripe Modal */}
+      {stripeModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-gray-100 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-[#ad7637]/10 text-[#ad7637]">
+                  <CreditCard className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-gray-900">Stripe Online Payment</h3>
+                  <p className="text-xs text-gray-500">Collect payment via Card / NetBanking / GPay</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setStripeModalOpen(false)}
+                className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Amount display */}
+            <div className="rounded-xl bg-[#fdfbf7] border border-[#f1e4d3] p-3 text-xs space-y-1.5">
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500">Invoice Total to Charge:</span>
+                <span className="font-bold text-[#ad7637] text-base font-mono">
+                  {preview ? formatINR(preview.grandTotal) : '₹0.00'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Customer:</span>
+                <span className="font-medium text-gray-800">
+                  {customerMode === 'existing' && selectedCustomer
+                    ? `${selectedCustomer.name} (${selectedCustomer.phone})`
+                    : customerMode === 'new' && newCustomer.name
+                    ? `${newCustomer.name} (${newCustomer.phone})`
+                    : 'Walk-in Customer'}
+                </span>
+              </div>
+            </div>
+
+            {stripeLoading && (
+              <div className="py-6 text-center text-xs text-gray-500 flex flex-col items-center gap-2">
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-[#ad7637] border-t-transparent" />
+                <span>Creating secure Stripe checkout session...</span>
+              </div>
+            )}
+
+            {stripeError && (
+              <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-xs text-red-600">
+                {stripeError}
+              </div>
+            )}
+
+            {stripeSuccess && (
+              <div className="rounded-xl bg-green-50 border border-green-200 p-3 text-xs text-green-700 flex items-center gap-2">
+                <CheckCircle2 className="h-5 w-5 shrink-0 text-green-600" />
+                <div>
+                  <p className="font-semibold">Payment Verified Successfully!</p>
+                  <p className="text-gray-600">Card payment of {preview ? formatINR(preview.grandTotal) : ''} added to invoice.</p>
+                </div>
+              </div>
+            )}
+
+            {stripeSession?.url && !stripeSuccess && (
+              <div className="space-y-3">
+                <label className="block text-xs font-medium text-gray-600">Checkout Link:</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value={stripeSession.url}
+                    className="flex-1 rounded-xl border border-gray-300 bg-gray-50 px-3 py-2 text-xs font-mono select-all focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(stripeSession.url);
+                      setStripeCopied(true);
+                      setTimeout(() => setStripeCopied(false), 2000);
+                    }}
+                    className="flex items-center gap-1 rounded-xl bg-gray-800 px-3 py-2 text-xs font-semibold text-white hover:bg-black transition-colors"
+                  >
+                    {stripeCopied ? <Check className="h-3.5 w-3.5 text-green-400" /> : <Copy className="h-3.5 w-3.5" />}
+                    <span>{stripeCopied ? 'Copied' : 'Copy'}</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <a
+                    href={stripeSession.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-center gap-1.5 rounded-xl border border-[#ad7637] bg-white px-3 py-2.5 text-xs font-semibold text-[#ad7637] hover:bg-[#ad7637]/10 transition-colors shadow-xs"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    <span>Open Checkout</span>
+                  </a>
+
+                  <a
+                    href={`https://wa.me/?text=${encodeURIComponent(
+                      `Dear Customer, here is your secure Stripe payment link for Shree Jewellers bill of ${preview ? formatINR(preview.grandTotal) : ''}: ${stripeSession.url}`
+                    )}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-center gap-1.5 rounded-xl bg-[#25D366] px-3 py-2.5 text-xs font-semibold text-white hover:bg-[#1fb855] transition-colors shadow-xs"
+                  >
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    <span>WhatsApp Link</span>
+                  </a>
+                </div>
+
+                <div className="pt-2 border-t border-gray-100 flex items-center justify-between">
+                  <span className="text-[11px] text-gray-500">After customer pays:</span>
+                  <button
+                    type="button"
+                    onClick={verifyStripePayment}
+                    disabled={stripeVerifying}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-[#ad7637] px-4 py-2 text-xs font-semibold text-white hover:bg-[#8f5e27] transition-all disabled:opacity-50"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${stripeVerifying ? 'animate-spin' : ''}`} />
+                    <span>{stripeVerifying ? 'Checking Status...' : 'Verify & Add to Bill'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

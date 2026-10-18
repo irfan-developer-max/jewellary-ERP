@@ -37,7 +37,7 @@ export function middleware(req: NextRequest) {
 
 export const config = {
   matcher: [
-    // Match all routes except static assets, api, and _next
-    '/((?!api|_next/static|_next/image|favicon.ico).*)',
+    // Match application routes, but allow public static assets through without a session.
+    '/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js)$).*)',
   ],
 };

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { devtools } from 'zustand/middleware';
+import { devtools, persist } from 'zustand/middleware';
 
 interface User {
   id: string;
@@ -16,12 +16,15 @@ interface AuthState {
 
 export const useAuthStore = create<AuthState>()(
   devtools(
-    (set) => ({
-      user: null,
-      isAuthenticated: false,
-      setUser: (user) => set({ user, isAuthenticated: !!user }, false, 'setUser'),
-      clear: () => set({ user: null, isAuthenticated: false }, false, 'clear'),
-    }),
+    persist(
+      (set) => ({
+        user: null,
+        isAuthenticated: false,
+        setUser: (user) => set({ user, isAuthenticated: !!user }, false, 'setUser'),
+        clear: () => set({ user: null, isAuthenticated: false }, false, 'clear'),
+      }),
+      { name: 'erp-auth-session' },
+    ),
     { name: 'auth-store' },
   ),
 );

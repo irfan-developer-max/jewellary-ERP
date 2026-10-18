@@ -36,7 +36,8 @@ export function errorHandler(err: Error, _req: Request, res: Response, _next: Ne
     ok: false,
     error: {
       code: 'INTERNAL_ERROR',
-      message: 'An unexpected error occurred',
+      message: err.message || 'An unexpected error occurred',
+      ...(process.env.NODE_ENV !== 'production' ? { stack: err.stack } : {}),
     },
   });
 }
