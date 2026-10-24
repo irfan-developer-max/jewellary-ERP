@@ -26,10 +26,29 @@ if (process.env.NODE_ENV === 'production') {
 // Global middleware
 app.use(requestId);
 app.use(pinoHttp);
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true,
-}));
+// Parse allowed origins, strip trailing slashes, and support comma-separated lists
+const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000')
+  .split(',')
+  .map((url) => url.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, server-to-server, health checks)
+      if (!origin) return callback(null, true);
+      const normalizedOrigin = origin.replace(/\/$/, '');
+      if (
+        allowedOrigins.includes(normalizedOrigin) ||
+        process.env.NODE_ENV !== 'production'
+      ) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS origin not allowed: ${origin}`));
+    },
+    credentials: true,
+  })
+);
 
 // Capture rawBody for Stripe Webhook signature verification
 app.use(

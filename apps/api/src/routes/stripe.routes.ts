@@ -6,13 +6,32 @@ import { logger } from '../lib/logger.js';
 
 export const stripeRouter: Router = Router();
 
-// Initialize Stripe instance
-const stripeKey = process.env.STRIPE_SECRET_KEY || '';
-const stripe = new Stripe(stripeKey);
+// Lazy Stripe client initialization to avoid crashing server on startup if env var is missing
+let stripeClient: Stripe | null = null;
+
+function getStripe(): Stripe {
+  const stripeKey = process.env.STRIPE_SECRET_KEY;
+  if (!stripeKey) {
+    throw new Error('STRIPE_SECRET_KEY is not configured in environment variables');
+  }
+  if (!stripeClient) {
+    stripeClient = new Stripe(stripeKey);
+  }
+  return stripeClient;
+}
 
 // ─── POST /api/v1/payments/stripe/create-checkout-session ─────────
 stripeRouter.post('/create-checkout-session', authenticate, async (req: Request, res: Response, next) => {
   try {
+    if (!process.env.STRIPE_SECRET_KEY) {
+      res.status(503).json({
+        ok: false,
+        error: { code: 'PAYMENT_NOT_CONFIGURED', message: 'Stripe payment gateway is not configured on this server.' },
+      });
+      return;
+    }
+    const stripe = getStripe();
+
     const { amount, customerName, customerPhone, customerEmail, dueId, saleId, invoiceNumber } = req.body;
 
     if (!amount || Number(amount) <= 0) {
@@ -20,7 +39,7 @@ stripeRouter.post('/create-checkout-session', authenticate, async (req: Request,
       return;
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:3000').split(',')[0].trim().replace(/\/$/, '');
     const amountInPaise = Math.round(Number(amount) * 100);
 
     const session = await stripe.checkout.sessions.create({
@@ -65,6 +84,14 @@ stripeRouter.post('/create-checkout-session', authenticate, async (req: Request,
 // ─── GET /api/v1/payments/stripe/verify/:sessionId ──────────────
 stripeRouter.get('/verify/:sessionId', authenticate, async (req: Request, res: Response, next) => {
   try {
+    if (!process.env.STRIPE_SECRET_KEY) {
+      res.status(503).json({
+        ok: false,
+        error: { code: 'PAYMENT_NOT_CONFIGURED', message: 'Stripe payment gateway is not configured on this server.' },
+      });
+      return;
+    }
+    const stripe = getStripe();
     const session = await stripe.checkout.sessions.retrieve(req.params.sessionId);
     res.json({
       ok: true,
@@ -86,6 +113,12 @@ stripeRouter.get('/verify/:sessionId', authenticate, async (req: Request, res: R
 stripeRouter.post('/webhook', async (req: Request, res: Response) => {
   const sig = req.headers['stripe-signature'];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  if (!process.env.STRIPE_SECRET_KEY) {
+    res.status(503).send('Stripe is not configured on this server.');
+    return;
+  }
+  const stripe = getStripe();
 
   let event: Stripe.Event;
 
